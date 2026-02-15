@@ -54,8 +54,13 @@ pip install --upgrade pip
 # Install dependencies
 echo "📚 Installing dependencies..."
 if [ -f "pyproject.toml" ] && command -v poetry &> /dev/null; then
-    echo "📖 Using Poetry for dependency management..."
-    poetry install
+    if poetry --version >/dev/null 2>&1; then
+        echo "📖 Using Poetry for dependency management..."
+        poetry install
+    else
+        echo "⚠️  Poetry command found but isn't working. Falling back to pip..."
+        pip install -r requirements.txt
+    fi
 elif [ -f "requirements.txt" ]; then
     echo "📖 Using pip for dependency management..."
     pip install -r requirements.txt

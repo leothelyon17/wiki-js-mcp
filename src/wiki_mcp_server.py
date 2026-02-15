@@ -12,6 +12,7 @@ import hashlib
 import logging
 import ast
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 from dataclasses import dataclass
@@ -25,7 +26,9 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 from tenacity import retry, stop_after_attempt, wait_exponential
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 # Create FastMCP server
 mcp = FastMCP("Wiki.js Integration")
@@ -42,10 +45,11 @@ class Settings(BaseSettings):
     LOG_FILE: str = Field(default="wikijs_mcp.log")
     REPOSITORY_ROOT: str = Field(default="./")
     DEFAULT_SPACE_NAME: str = Field(default="Documentation")
-    
-    class Config:
-        env_file = ".env"
-        extra = "ignore"  # Allow extra fields without validation errors
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",  # Allow extra fields without validation errors
+    )
     
     @property
     def token(self) -> Optional[str]:
@@ -178,11 +182,12 @@ class WikiJSClient:
 # Initialize client
 wikijs = WikiJSClient()
 
+@contextmanager
 def get_db():
-    """Get database session."""
+    """Get database session and ensure it is closed."""
     db = SessionLocal()
     try:
-        return db
+        yield db
     finally:
         db.close()
 
@@ -198,6 +203,12 @@ def markdown_to_html(content: str) -> str:
     """Convert markdown content to HTML."""
     md = markdown.Markdown(extensions=['codehilite', 'fenced_code', 'tables'])
     return md.convert(content)
+
+
+@mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
+async def healthz(_request: Request) -> JSONResponse:
+    """Lightweight health check endpoint for HTTP transports."""
+    return JSONResponse({"status": "ok"})
 
 def find_repository_root(start_path: str = None) -> Optional[str]:
     """Find the repository root by looking for .git directory or .wikijs_mcp file."""
@@ -734,30 +745,29 @@ async def wikijs_link_file_to_page(file_path: str, page_id: int, relationship: s
         JSON string with link status
     """
     try:
-        db = get_db()
-        
-        # Calculate file hash
-        file_hash = get_file_hash(file_path)
-        repo_root = find_repository_root(file_path)
-        
-        # Create or update mapping
-        mapping = db.query(FileMapping).filter(FileMapping.file_path == file_path).first()
-        if mapping:
-            mapping.page_id = page_id
-            mapping.relationship_type = relationship
-            mapping.file_hash = file_hash
-            mapping.last_updated = datetime.datetime.utcnow()
-        else:
-            mapping = FileMapping(
-                file_path=file_path,
-                page_id=page_id,
-                relationship_type=relationship,
-                file_hash=file_hash,
-                repository_root=repo_root or ""
-            )
-            db.add(mapping)
-        
-        db.commit()
+        with get_db() as db:
+            # Calculate file hash
+            file_hash = get_file_hash(file_path)
+            repo_root = find_repository_root(file_path)
+            
+            # Create or update mapping
+            mapping = db.query(FileMapping).filter(FileMapping.file_path == file_path).first()
+            if mapping:
+                mapping.page_id = page_id
+                mapping.relationship_type = relationship
+                mapping.file_hash = file_hash
+                mapping.last_updated = datetime.datetime.utcnow()
+            else:
+                mapping = FileMapping(
+                    file_path=file_path,
+                    page_id=page_id,
+                    relationship_type=relationship,
+                    file_hash=file_hash,
+                    repository_root=repo_root or ""
+                )
+                db.add(mapping)
+            
+            db.commit()
         
         result = {
             "linked": True,
@@ -788,40 +798,39 @@ async def wikijs_sync_file_docs(file_path: str, change_summary: str, snippet: st
         JSON string with sync status
     """
     try:
-        db = get_db()
-        
-        # Look up page mapping
-        mapping = db.query(FileMapping).filter(FileMapping.file_path == file_path).first()
-        if not mapping:
-            return json.dumps({"error": f"No page mapping found for {file_path}"})
-        
-        # Get current page content
-        page_response = await wikijs_get_page(page_id=mapping.page_id)
-        page_data = json.loads(page_response)
-        
-        if "error" in page_data:
-            return json.dumps({"error": f"Failed to get page: {page_data['error']}"})
-        
-        # Append change summary to page content
-        current_content = page_data.get("content", "")
-        
-        update_section = f"\n\n## Recent Changes\n\n**{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}**: {change_summary}\n"
-        if snippet:
-            update_section += f"\n```\n{snippet}\n```\n"
-        
-        new_content = current_content + update_section
-        
-        # Update the page
-        update_response = await wikijs_update_page(mapping.page_id, content=new_content)
-        update_data = json.loads(update_response)
-        
-        if "error" in update_data:
-            return json.dumps({"error": f"Failed to update page: {update_data['error']}"})
-        
-        # Update file hash
-        mapping.file_hash = get_file_hash(file_path)
-        mapping.last_updated = datetime.datetime.utcnow()
-        db.commit()
+        with get_db() as db:
+            # Look up page mapping
+            mapping = db.query(FileMapping).filter(FileMapping.file_path == file_path).first()
+            if not mapping:
+                return json.dumps({"error": f"No page mapping found for {file_path}"})
+            
+            # Get current page content
+            page_response = await wikijs_get_page(page_id=mapping.page_id)
+            page_data = json.loads(page_response)
+            
+            if "error" in page_data:
+                return json.dumps({"error": f"Failed to get page: {page_data['error']}"})
+            
+            # Append change summary to page content
+            current_content = page_data.get("content", "")
+            
+            update_section = f"\n\n## Recent Changes\n\n**{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}**: {change_summary}\n"
+            if snippet:
+                update_section += f"\n```\n{snippet}\n```\n"
+            
+            new_content = current_content + update_section
+            
+            # Update the page
+            update_response = await wikijs_update_page(mapping.page_id, content=new_content)
+            update_data = json.loads(update_response)
+            
+            if "error" in update_data:
+                return json.dumps({"error": f"Failed to update page: {update_data['error']}"})
+            
+            # Update file hash
+            mapping.file_hash = get_file_hash(file_path)
+            mapping.last_updated = datetime.datetime.utcnow()
+            db.commit()
         
         result = {
             "updated": True,
@@ -945,58 +954,58 @@ async def wikijs_bulk_update_project_docs(
         JSON string with bulk update results
     """
     try:
-        db = get_db()
         results = {
             "updated_pages": [],
             "created_pages": [],
             "errors": []
         }
-        
-        # Process each affected file
-        for file_path in affected_files:
-            try:
-                # Check if file has a mapping
-                mapping = db.query(FileMapping).filter(FileMapping.file_path == file_path).first()
-                
-                if mapping:
-                    # Update existing page
-                    sync_response = await wikijs_sync_file_docs(
-                        file_path, 
-                        f"Bulk update: {summary}", 
-                        context
-                    )
-                    sync_data = json.loads(sync_response)
-                    if "error" not in sync_data:
-                        results["updated_pages"].append({
-                            "file_path": file_path,
-                            "page_id": mapping.page_id
-                        })
-                    else:
-                        results["errors"].append({
-                            "file_path": file_path,
-                            "error": sync_data["error"]
-                        })
-                
-                elif auto_create_missing:
-                    # Create new overview page
-                    overview_response = await wikijs_generate_file_overview(file_path)
-                    overview_data = json.loads(overview_response)
-                    if "error" not in overview_data and "pageId" in overview_data:
-                        results["created_pages"].append({
-                            "file_path": file_path,
-                            "page_id": overview_data["pageId"]
-                        })
-                    else:
-                        results["errors"].append({
-                            "file_path": file_path,
-                            "error": overview_data.get("error", "Failed to create page")
-                        })
-                
-            except Exception as e:
-                results["errors"].append({
-                    "file_path": file_path,
-                    "error": str(e)
-                })
+
+        with get_db() as db:
+            # Process each affected file
+            for file_path in affected_files:
+                try:
+                    # Check if file has a mapping
+                    mapping = db.query(FileMapping).filter(FileMapping.file_path == file_path).first()
+                    
+                    if mapping:
+                        # Update existing page
+                        sync_response = await wikijs_sync_file_docs(
+                            file_path, 
+                            f"Bulk update: {summary}", 
+                            context
+                        )
+                        sync_data = json.loads(sync_response)
+                        if "error" not in sync_data:
+                            results["updated_pages"].append({
+                                "file_path": file_path,
+                                "page_id": mapping.page_id
+                            })
+                        else:
+                            results["errors"].append({
+                                "file_path": file_path,
+                                "error": sync_data["error"]
+                            })
+                    
+                    elif auto_create_missing:
+                        # Create new overview page
+                        overview_response = await wikijs_generate_file_overview(file_path)
+                        overview_data = json.loads(overview_response)
+                        if "error" not in overview_data and "pageId" in overview_data:
+                            results["created_pages"].append({
+                                "file_path": file_path,
+                                "page_id": overview_data["pageId"]
+                            })
+                        else:
+                            results["errors"].append({
+                                "file_path": file_path,
+                                "error": overview_data.get("error", "Failed to create page")
+                            })
+                    
+                except Exception as e:
+                    results["errors"].append({
+                        "file_path": file_path,
+                        "error": str(e)
+                    })
         
         results["summary"] = {
             "total_files": len(affected_files),
@@ -1098,35 +1107,35 @@ async def wikijs_repository_context() -> str:
     """
     try:
         repo_root = find_repository_root()
-        db = get_db()
-        
-        # Get repository context from database
-        context = db.query(RepositoryContext).filter(
-            RepositoryContext.root_path == repo_root
-        ).first()
-        
-        # Get file mappings for this repository
-        mappings = db.query(FileMapping).filter(
-            FileMapping.repository_root == repo_root
-        ).all()
-        
-        result = {
-            "repository_root": repo_root,
-            "space_name": context.space_name if context else settings.DEFAULT_SPACE_NAME,
-            "space_id": context.space_id if context else None,
-            "mapped_files": len(mappings),
-            "mappings": [
-                {
-                    "file_path": m.file_path,
-                    "page_id": m.page_id,
-                    "relationship": m.relationship_type,
-                    "last_updated": m.last_updated.isoformat() if m.last_updated else None
-                }
-                for m in mappings[:10]  # Limit to first 10 for brevity
-            ]
-        }
-        
-        return json.dumps(result)
+
+        with get_db() as db:
+            # Get repository context from database
+            context = db.query(RepositoryContext).filter(
+                RepositoryContext.root_path == repo_root
+            ).first()
+            
+            # Get file mappings for this repository
+            mappings = db.query(FileMapping).filter(
+                FileMapping.repository_root == repo_root
+            ).all()
+            
+            result = {
+                "repository_root": repo_root,
+                "space_name": context.space_name if context else settings.DEFAULT_SPACE_NAME,
+                "space_id": context.space_id if context else None,
+                "mapped_files": len(mappings),
+                "mappings": [
+                    {
+                        "file_path": m.file_path,
+                        "page_id": m.page_id,
+                        "relationship": m.relationship_type,
+                        "last_updated": m.last_updated.isoformat() if m.last_updated else None
+                    }
+                    for m in mappings[:10]  # Limit to first 10 for brevity
+                ]
+            }
+            
+            return json.dumps(result)
         
     except Exception as e:
         error_msg = f"Failed to get repository context: {str(e)}"
@@ -1642,14 +1651,14 @@ async def wikijs_delete_page(page_id: int = None, page_path: str = None, remove_
             
             # Remove file mapping if requested
             if remove_file_mapping:
-                db = get_db()
-                mapping = db.query(FileMapping).filter(FileMapping.page_id == page_id).first()
-                if mapping:
-                    db.delete(mapping)
-                    db.commit()
-                    result["file_mapping_removed"] = True
-                else:
-                    result["file_mapping_removed"] = False
+                with get_db() as db:
+                    mapping = db.query(FileMapping).filter(FileMapping.page_id == page_id).first()
+                    if mapping:
+                        db.delete(mapping)
+                        db.commit()
+                        result["file_mapping_removed"] = True
+                    else:
+                        result["file_mapping_removed"] = False
             
             logger.info(f"Deleted page: {page_data['title']} (ID: {page_id})")
             return json.dumps(result)
@@ -1972,62 +1981,62 @@ async def wikijs_cleanup_orphaned_mappings() -> str:
     """
     try:
         await wikijs.authenticate()
-        db = get_db()
-        
-        # Get all file mappings
-        mappings = db.query(FileMapping).all()
-        
-        if not mappings:
-            return json.dumps({
-                "message": "No file mappings found",
-                "cleaned_count": 0
-            })
-        
-        # Check which pages still exist
-        orphaned_mappings = []
-        valid_mappings = []
-        
-        for mapping in mappings:
-            try:
-                get_query = """
-                query($id: Int!) {
-                    pages {
-                        single(id: $id) {
-                            id
-                            title
-                            path
+
+        with get_db() as db:
+            # Get all file mappings
+            mappings = db.query(FileMapping).all()
+            
+            if not mappings:
+                return json.dumps({
+                    "message": "No file mappings found",
+                    "cleaned_count": 0
+                })
+            
+            # Check which pages still exist
+            orphaned_mappings = []
+            valid_mappings = []
+            
+            for mapping in mappings:
+                try:
+                    get_query = """
+                    query($id: Int!) {
+                        pages {
+                            single(id: $id) {
+                                id
+                                title
+                                path
+                            }
                         }
                     }
-                }
-                """
-                get_response = await wikijs.graphql_request(get_query, {"id": mapping.page_id})
-                page_data = get_response.get("data", {}).get("pages", {}).get("single")
-                
-                if page_data:
-                    valid_mappings.append({
-                        "file_path": mapping.file_path,
-                        "page_id": mapping.page_id,
-                        "page_title": page_data["title"]
-                    })
-                else:
+                    """
+                    get_response = await wikijs.graphql_request(get_query, {"id": mapping.page_id})
+                    page_data = get_response.get("data", {}).get("pages", {}).get("single")
+                    
+                    if page_data:
+                        valid_mappings.append({
+                            "file_path": mapping.file_path,
+                            "page_id": mapping.page_id,
+                            "page_title": page_data["title"]
+                        })
+                    else:
+                        orphaned_mappings.append({
+                            "file_path": mapping.file_path,
+                            "page_id": mapping.page_id,
+                            "last_updated": mapping.last_updated.isoformat() if mapping.last_updated else None
+                        })
+                        # Delete orphaned mapping
+                        db.delete(mapping)
+                        
+                except Exception as e:
+                    # If we can't check the page, consider it orphaned
                     orphaned_mappings.append({
                         "file_path": mapping.file_path,
                         "page_id": mapping.page_id,
-                        "last_updated": mapping.last_updated.isoformat() if mapping.last_updated else None
+                        "error": str(e)
                     })
-                    # Delete orphaned mapping
                     db.delete(mapping)
-                    
-            except Exception as e:
-                # If we can't check the page, consider it orphaned
-                orphaned_mappings.append({
-                    "file_path": mapping.file_path,
-                    "page_id": mapping.page_id,
-                    "error": str(e)
-                })
-                db.delete(mapping)
-        
-        db.commit()
+            
+            db.commit()
         
         result = {
             "total_mappings": len(mappings),
@@ -2047,15 +2056,64 @@ async def wikijs_cleanup_orphaned_mappings() -> str:
         return json.dumps({"error": error_msg})
 
 def main():
-    """Main entry point for the MCP server."""
-    import asyncio
-    
-    async def run_server():
-        await wikijs.authenticate()
-        logger.info("Wiki.js MCP Server started")
-        
-    # Run the server
-    mcp.run()
+    """Main entry point for the MCP server.
+
+    Defaults to `stdio` transport for IDE integrations. For remote deployments,
+    use `--transport streamable-http`.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Wiki.js MCP server")
+    parser.add_argument(
+        "--transport",
+        default=os.getenv("MCP_TRANSPORT", "stdio"),
+        choices=["stdio", "http", "sse", "streamable-http"],
+        help="MCP transport to use (default: stdio)",
+    )
+    parser.add_argument("--host", default=os.getenv("MCP_HOST"), help="HTTP bind host")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("MCP_PORT")) if os.getenv("MCP_PORT") else None,
+        help="HTTP bind port",
+    )
+    parser.add_argument(
+        "--path",
+        default=os.getenv("MCP_PATH"),
+        help="HTTP path for MCP endpoint (e.g. /mcp)",
+    )
+    parser.add_argument(
+        "--log-level",
+        dest="log_level",
+        default=os.getenv("MCP_LOG_LEVEL"),
+        help="Server log level override (e.g. INFO, DEBUG)",
+    )
+    parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        help="Disable FastMCP startup banner",
+    )
+
+    args = parser.parse_args()
+
+    transport_kwargs: Dict[str, Any] = {}
+    if args.log_level:
+        transport_kwargs["log_level"] = args.log_level
+
+    # Only pass HTTP options to HTTP transports; stdio doesn't accept them.
+    if args.transport in {"http", "sse", "streamable-http"}:
+        if args.host:
+            transport_kwargs["host"] = args.host
+        if args.port is not None:
+            transport_kwargs["port"] = args.port
+        if args.path:
+            transport_kwargs["path"] = args.path
+
+    mcp.run(
+        transport=args.transport,
+        show_banner=not args.no_banner,
+        **transport_kwargs,
+    )
 
 if __name__ == "__main__":
     main() 

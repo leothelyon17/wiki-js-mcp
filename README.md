@@ -43,6 +43,11 @@ Complete the initial setup in the web interface
 # and you should see a green dot with all tools listed. In existing open Cursor windows,
 # this refresh is necessary in order to use this MCP)
 ./start-server.sh
+
+# Streamable HTTP (for remote/Docker deployments)
+# MCP endpoint: http://localhost:8000/mcp
+# Health check:  http://localhost:8000/healthz
+python src/wiki_mcp_server.py --transport streamable-http --host 0.0.0.0 --port 8000
 ```
 
 ### 4. Configure Cursor MCP
@@ -366,6 +371,18 @@ curl http://localhost:3000/graphql
 # Debug mode
 export LOG_LEVEL=DEBUG
 ./start-server.sh
+```
+
+### MCP Server Dockerfile
+This repo also includes a `Dockerfile` for running the MCP server over **Streamable HTTP**:
+```bash
+docker build -t wikijs-mcp .
+
+docker run --rm -p 8000:8000 \
+  -e WIKIJS_API_URL=http://host.docker.internal:3000 \
+  -e WIKIJS_TOKEN=your_jwt_token_here \
+  -v wikijs-mcp-data:/data \
+  wikijs-mcp
 ```
 
 ### Common Problems
