@@ -86,6 +86,7 @@ mkdir -p logs
 echo "🔐 Setting executable permissions..."
 chmod +x setup.sh
 chmod +x start-server.sh
+chmod +x test-server.sh
 
 echo ""
 echo "🎉 Setup completed successfully!"
