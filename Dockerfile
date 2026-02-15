@@ -3,7 +3,9 @@ FROM python:3.12-slim
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Allow importing src/wiki_mcp_server.py as `import wiki_mcp_server`.
+    PYTHONPATH=/app/src
 
 # Install dependencies first for better layer caching.
 COPY requirements.txt /app/requirements.txt
@@ -27,3 +29,4 @@ EXPOSE 8000
 
 # Default to Streamable HTTP transport for container deployments.
 CMD ["python", "src/wiki_mcp_server.py", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
+
