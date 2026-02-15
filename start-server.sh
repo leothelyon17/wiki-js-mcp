@@ -48,4 +48,4 @@ fi
 mkdir -p logs
 
 # Start the MCP server (this will handle stdin/stdout communication with Cursor)
-exec python src/wiki_mcp_server.py 
+exec python src/wiki_mcp_server.py --transport stdio

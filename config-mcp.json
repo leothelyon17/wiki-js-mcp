@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "wikijs": {
-      "command": "/absolute/path/to/wiki-js-mcp/start-server.sh"
+      "command": "bash",
+      "args": ["/absolute/path/to/wiki-js-mcp/start-server.sh"]
     }
   }
 } 

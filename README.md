@@ -29,20 +29,25 @@ Complete the initial setup in the web interface
 ### 3. Setup MCP Server
 ```bash
 # Install Python dependencies
-./setup.sh
+bash ./setup.sh
 
 # Update .env with Wiki.js API credentials:
 # - Get API key from Wiki.js admin panel  
 # - Set WIKIJS_TOKEN in .env file
 
 # Test the connection
-./test-server.sh
+bash ./test-server.sh
 
 # Start MCP server
 # (not needed for AI IDEs like Cursor, simply click on the refresh icon after editing mcp.json
 # and you should see a green dot with all tools listed. In existing open Cursor windows,
 # this refresh is necessary in order to use this MCP)
-./start-server.sh
+bash ./start-server.sh
+
+# Streamable HTTP (for remote/Docker deployments)
+# MCP endpoint: http://localhost:8000/mcp
+# Health check:  http://localhost:8000/healthz
+python src/wiki_mcp_server.py --transport streamable-http --host 0.0.0.0 --port 8000
 ```
 
 ### 4. Configure Cursor MCP
@@ -51,7 +56,8 @@ Add to your `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "wikijs": {
-      "command": "/path/to/wiki-js-mcp/start-server.sh"
+      "command": "bash",
+      "args": ["/path/to/wiki-js-mcp/start-server.sh"]
     }
   }
 }
@@ -361,18 +367,30 @@ docker-compose -f docker.yml up -d
 curl http://localhost:3000/graphql
 
 # Verify authentication
-./test-server.sh
+bash ./test-server.sh
 
 # Debug mode
 export LOG_LEVEL=DEBUG
-./start-server.sh
+bash ./start-server.sh
+```
+
+### MCP Server Dockerfile
+This repo also includes a `Dockerfile` for running the MCP server over **Streamable HTTP**:
+```bash
+docker build -t wikijs-mcp .
+
+docker run --rm -p 8000:8000 \
+  -e WIKIJS_API_URL=http://host.docker.internal:3000 \
+  -e WIKIJS_TOKEN=your_jwt_token_here \
+  -v wikijs-mcp-data:/data \
+  wikijs-mcp
 ```
 
 ### Common Problems
 - **Port conflicts**: Change port 3000 in `docker.yml` if needed
 - **Database issues**: Remove `postgres_data/` and restart
 - **API permissions**: Ensure API key has admin privileges
-- **Python dependencies**: Run `./setup.sh` to reinstall
+- **Python dependencies**: Run `bash ./setup.sh` to reinstall
 
 ## 📚 Documentation
 

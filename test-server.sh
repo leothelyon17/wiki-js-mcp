@@ -78,7 +78,7 @@ echo "   Press Ctrl+C to stop the server"
 echo ""
 
 # Run the server with error handling
-if python src/wiki_mcp_server.py; then
+if python src/wiki_mcp_server.py --transport stdio; then
     echo "✅ Server started successfully"
 else
     echo "❌ Server failed to start. Check the logs for details:"
